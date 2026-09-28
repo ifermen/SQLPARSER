@@ -153,21 +153,29 @@ La inferencia produce relaciones en el modelo, no anotaciones. Traducirlas a ano
 
 ### Contrato de generador
 
-Todo ORM se implementa como un generador que cumple una interfaz común definida en `core/generators/`. Contrato orientativo:
+Todo ORM se implementa como un generador que cumple la interfaz común de [`core/generators/generator.ts`](src/core/generators/generator.ts):
 
 ```ts
-interface Generator<TOptions> {
+interface Generator<TOptions extends object> {
   id: string; // p. ej. "jpa"
   label: string; // nombre visible en la UI
-  defaultOptions: TOptions; // valores por defecto sensatos
-  generate(schema: SchemaModel, options: TOptions): GenerationResult;
+  defaultOptions: TOptions; // valores por defecto sensatos (serializables)
+  generate(schema: EnrichedSchemaModel, options: TOptions): GenerationResult;
 }
 
 interface GenerationResult {
-  files: { path: string; content: string }[]; // incluye README
+  files: { path: string; content: string; language: string }[]; // incluye README
   diagnostics: Diagnostic[];
 }
 ```
+
+### Modelo de esquema (`core/model/`)
+
+- `SchemaModel` es la salida del parser; `EnrichedSchemaModel` (tablas con `kind` + `relationships`) la de la inferencia y la entrada de los generadores.
+- PK, UNIQUE y FK se representan **solo como restricciones** de la tabla (con lista de columnas, para cubrir las compuestas); las columnas no llevan flags `pk`/`unique`.
+- Cada columna tiene un `LogicalType` independiente del dialecto que rellena el parser; los generadores mapean desde él, no desde el tipo SQL en bruto.
+- Las relaciones son una unión discriminada por `kind` (`many-to-one`, `one-to-one`, `many-to-many`). El `one-to-many` es el lado inverso de `many-to-one` y lo emite el generador. Cada relación indica la `rule` de inferencia aplicada, que sirve para el README.
+- `Diagnostic.code` es un `string` con espacio de nombres (`parser.*`, `inference.*`, `<generador>.*`) para que un generador nuevo defina sus códigos sin tocar el modelo.
 
 Para añadir un ORM nuevo: crear `core/generators/<orm>/`, implementar la interfaz y registrarlo en el registro de generadores. Si para ello necesitas tocar `parser/`, `model/` o `inference/`, detente y replantea el diseño.
 
