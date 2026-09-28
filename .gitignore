@@ -1,0 +1,29 @@
+# Dependencias
+node_modules/
+
+# Build
+dist/
+dist-ssr/
+*.tsbuildinfo
+
+# Tests
+coverage/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Entorno local
+*.local
+.env
+.env.*
+
+# Editor / SO
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Vercel
+.vercel/
