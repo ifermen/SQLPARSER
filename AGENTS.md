@@ -138,6 +138,17 @@ Cada etapa es una función pura: misma entrada ⇒ misma salida. Los diagnóstic
 - Todo diagnóstico incluye **mensaje + fragmento SQL problemático** (y posición si la librería la proporciona). Un mensaje sin fragmento no es aceptable.
 - Una sentencia no soportada nunca debe abortar el análisis del resto del script.
 
+### Parser (`core/parser/`)
+
+Punto de entrada: `parseSql(script, { dialect? }) → { schema, dialect, diagnostics }`. `schema` es `null` si hay algún error o si el script está vacío.
+
+- **Uso de la librería.** [`sqlSchemaLibrary.ts`](src/core/parser/sqlSchemaLibrary.ts) es el único fichero que importa `@khanakia/sql-schema-core`, y solo se usa para leer definiciones de columna (nombre, tipo, nulabilidad, default, comentarios `--`). Todo lo demás lo analiza el propio parser porque la librería pierde información: separa las FK compuestas, fusiona las UNIQUE compuestas, ignora casi todos los `ALTER TABLE`, recorta tipos (`int unsigned`, `timestamp with time zone`, `schema.tipo`) y no da posiciones ni fragmentos. Hay tests que cubren cada uno de estos casos; no los elimines si cambias de librería.
+- **Esqueleto.** El escáner (`sqlScanner.ts`) produce, además de las sentencias, un esqueleto del texto con comentarios y contenido de literales en blanco y las mismas posiciones. Las palabras clave se buscan en el esqueleto y los valores (defaults, comentarios) se leen del texto original en el mismo offset.
+- **Orden.** Primero se procesan todos los `CREATE TABLE` y después el resto, así un `ALTER TABLE` encuentra su tabla aunque aparezca antes. Las referencias (FK, columnas de restricciones) se resuelven al final, sin distinguir mayúsculas.
+- **Qué se interpreta.** `CREATE TABLE`, `ALTER TABLE` (ADD columna/PK/UNIQUE/FK, `MODIFY`, `ALTER COLUMN … SET DEFAULT/NOT NULL/ADD GENERATED`), `CREATE UNIQUE INDEX` (como UNIQUE) y `COMMENT ON TABLE/COLUMN`. Las sentencias que no afectan al modelo (datos, transacciones, `SET`, `DROP`, índices no únicos, secuencias…) se omiten **sin aviso**. Las que podrían definir estructura y no se interpretan (vistas, tipos, funciones, triggers…) generan un **aviso**.
+- **Errores vs. avisos.** Son errores: literal, comentario o paréntesis sin cerrar, un `CREATE TABLE` ilegible y un script sin tablas. Todo lo demás (columna ilegible, tipo desconocido, FK a una tabla inexistente…) es un aviso: el elemento se descarta y el análisis continúa. Los códigos están en [`diagnosticCodes.ts`](src/core/parser/diagnosticCodes.ts).
+- **Dialecto.** Se detecta sumando rasgos de sintaxis propios de cada dialecto; si no hay ninguno o hay empate, el resultado es `null` y se avisa. El dialecto influye en los escapes de literales (MySQL) y en algunos tipos (`FLOAT`/`REAL`, `INTEGER PRIMARY KEY` en SQLite).
+
 ### Inferencia de relaciones
 
 Reglas base (documentar en el README generado cualquier decisión aplicada):
