@@ -54,7 +54,7 @@ Antes de dar una tarea por terminada: `lint`, `test` y `build` deben pasar sin e
 ### Configuración relevante
 
 - `vite.config.ts` — plugins (React, Tailwind v4 vía `@tailwindcss/vite`), alias `@/` y configuración de Vitest.
-- `eslint.config.js` — además de las reglas habituales, **hace cumplir las reglas de dependencia y privacidad** de este documento (`no-restricted-imports` por carpeta, `fetch`/`XMLHttpRequest`/`WebSocket`/`sendBeacon` prohibidos en `src/`, `window`/`document` prohibidos en `core/`, `@khanakia/*` solo en `core/parser/`). Si cambias las reglas de dependencia aquí, actualiza también ese fichero.
+- `eslint.config.js` — además de las reglas habituales, **hace cumplir las reglas de dependencia y privacidad** de este documento (`no-restricted-imports` por carpeta, `fetch`/`XMLHttpRequest`/`WebSocket`/`sendBeacon` prohibidos en `src/`, `window`/`document` prohibidos en `core/`, `@khanakia/*` solo en `core/parser/`; los `*.integration.test.ts` de `core/` pueden importar cualquier módulo de `core/`). Si cambias las reglas de dependencia aquí, actualiza también ese fichero.
 - `vercel.json` — cabeceras de seguridad; la CSP incluye `connect-src 'none'`, así que cualquier llamada de red se bloquea también en producción.
 - Tailwind v4 no necesita `tailwind.config`; los estilos globales viven en `src/index.css`.
 
@@ -198,6 +198,23 @@ Reglas base (documentar en el README generado cualquier decisión aplicada):
 
 La inferencia produce relaciones en el modelo, no anotaciones. Traducirlas a anotaciones es trabajo del generador.
 
+**Implementación (`core/inference/`).** Punto de entrada: `inferRelationships(schema: SchemaModel) → { schema: EnrichedSchemaModel, diagnostics }`. Es independiente del parser: el que orqueste el pipeline llama primero a `parseSql` y después a `inferRelationships` con el esquema resultante.
+
+- **Clasificación de tablas** ([`classifyTable.ts`](src/core/inference/classifyTable.ts)). "PK formada exactamente por dos FK" significa: dos FK contenidas en la PK, sin columnas en común, que entre las dos cubren toda la PK. Cada FK puede ser compuesta.
+  - `join-table`: se cumple lo anterior y la tabla no tiene más columnas. También una tabla **sin PK** cuyas columnas son exactamente las de dos FK: sin clave no puede ser una entidad JPA, así que se trata como tabla intermedia.
+  - `association-entity`: se cumple lo anterior y hay columnas propias. Si tiene FK adicionales fuera de la PK, dan relaciones normales.
+  - `entity`: cualquier otro caso, incluidos una PK con tres FK, una PK con dos FK más otra columna, o FK que se solapan.
+- **Relaciones.** Por cada FK que no forma parte de una tabla intermedia pura, en este orden:
+  1. columnas de la FK = PK → `one-to-one` (`primary-key-foreign-key`);
+  2. hay una UNIQUE con exactamente las columnas de la FK → `one-to-one` (`unique-foreign-key`);
+  3. en otro caso → `many-to-one` (`foreign-key`).
+
+  Las FK de una entidad de asociación son `many-to-one` con regla `association-entity`. En `many-to-many`, el lado propietario (`source`) es el de la primera FK en el orden del script.
+- **Comparación de columnas:** como conjuntos (el orden no importa) y sin distinguir mayúsculas.
+- **Orden de las relaciones:** el de las tablas y, dentro de cada tabla, el de sus FK. Así el resultado es determinista.
+- **Autorreferencias y varias FK a la misma tabla:** dan una relación por FK (`category.parent_id → category`, `created_by`/`updated_by → users`). Nombrar esos atributos sin colisiones es trabajo del generador.
+- **Diagnósticos (siempre avisos):** FK hacia una tabla que no está en el esquema y FK que apunta a sus propias columnas; en ambos casos no se genera relación. Como la inferencia no tiene el script, el fragmento es la FK reconstruida (`FOREIGN KEY (a) REFERENCES t (id)`). Los códigos están en [`diagnosticCodes.ts`](src/core/inference/diagnosticCodes.ts).
+
 ### Contrato de generador
 
 Todo ORM se implementa como un generador que cumple la interfaz común de [`core/generators/generator.ts`](src/core/generators/generator.ts):
@@ -269,6 +286,7 @@ Prohibido, sin excepciones en el MVP:
 - El entorno por defecto de Vitest es **Node** (así se garantiza que `core/` no depende del DOM). Los tests de UI activan jsdom con el docblock `// @vitest-environment jsdom` en la primera línea. Los matchers de `@testing-library/jest-dom` se cargan globalmente desde `vitest.setup.ts`.
 - Para los generadores, comparar la salida contra ficheros esperados (snapshot o golden files) a partir de scripts SQL reales.
 - Cubrir siempre los casos de la tabla de relaciones y las ramas de error de la spec: script inválido (error), sentencias no soportadas (aviso), dialecto no detectado.
+- **Tests de integración** que encadenan etapas del pipeline (p. ej. parser + inferencia): se nombran `algo.integration.test.ts`. Es la única excepción a las reglas de dependencia: ESLint permite que esos ficheros importen cualquier módulo de `core/` (nunca React ni la UI). Reutilizan los fixtures SQL de `core/parser/__fixtures__/` en vez de duplicarlos.
 - Cada dialecto soportado tiene sus fixtures en `core/parser/__fixtures__/` (los de Oracle empiezan por `oracle-`). Un cambio que dependa del dialecto se prueba en todos a los que afecte; los tests específicos de Oracle están en `parseSql.oracle.test.ts`.
 - Los componentes de `components/` se testean por comportamiento, no por implementación.
 
