@@ -1,5 +1,5 @@
 import type { SqlDialect } from '@/core/model';
-import type { ColumnDefinitionInfo } from './columnDefinition';
+import { isSequenceValue, type ColumnDefinitionInfo } from './columnDefinition';
 import { parseColumnType } from './columnType';
 import { PARSER_DIAGNOSTICS } from './diagnosticCodes';
 import { findColumn, type ColumnDraft, type ParseContext, type PrimaryKeyDraft, type TableDraft } from './parseContext';
@@ -31,7 +31,7 @@ export function buildColumn(
     autoIncrement:
       info.autoIncrement ||
       /SERIAL/.test(type.name) ||
-      (defaultValue !== undefined && /\bnextval\s*\(/i.test(defaultValue)),
+      (defaultValue !== undefined && isSequenceValue(defaultValue)),
     ...(defaultValue !== undefined ? { defaultValue } : {}),
     ...(comment ? { comment } : {}),
   };
@@ -84,6 +84,41 @@ export function replaceColumn(
   const column = buildColumn(context.dialect, libraryColumn, info);
   reportUnknownType(context, table, column, span);
   table.columns[index] = column;
+  addInlineConstraints(context, table, info, span);
+}
+
+/** Palabras que pueden seguir al nombre de columna en un `MODIFY` parcial sin indicar tipo. */
+const STARTS_WITH_TYPE =
+  /^\s*(?!(?:DEFAULT|NOT|NULL|CONSTRAINT|GENERATED|ENABLE|DISABLE|VISIBLE|INVISIBLE|ENCRYPT|DECRYPT|UNIQUE|PRIMARY|CHECK|REFERENCES|COLLATE|SORT|NOSORT|LOB)\b)[A-Za-z_"]/i;
+
+/**
+ * `MODIFY` de Oracle: solo cambia lo que se indica (tipo, valor por defecto,
+ * nulabilidad, identidad), a diferencia del `MODIFY` de MySQL, que redefine la
+ * columna entera. `afterName` es el esqueleto que sigue al nombre de la columna.
+ */
+export function modifyColumnPartially(
+  context: ParseContext,
+  table: TableDraft,
+  column: ColumnDraft,
+  info: ColumnDefinitionInfo,
+  libraryColumn: LibraryColumn | null,
+  afterName: string,
+  span: Segment,
+): void {
+  const rebuilt = libraryColumn ? buildColumn(context.dialect, libraryColumn, info) : null;
+
+  if (rebuilt && STARTS_WITH_TYPE.test(afterName)) {
+    column.type = rebuilt.type;
+    reportUnknownType(context, table, column, span);
+  }
+  if (/(?<!\bBY\s+)\bDEFAULT\b/i.test(afterName)) {
+    if (rebuilt?.defaultValue !== undefined) column.defaultValue = rebuilt.defaultValue;
+    else delete column.defaultValue;
+  }
+  if (/\bNOT\s+NULL\b/i.test(afterName)) column.nullable = false;
+  else if (/(?<!\bNOT\s+)(?<!\bDEFAULT\s+)\bNULL\b/i.test(afterName)) column.nullable = true;
+  if (info.autoIncrement || rebuilt?.autoIncrement) column.autoIncrement = true;
+
   addInlineConstraints(context, table, info, span);
 }
 

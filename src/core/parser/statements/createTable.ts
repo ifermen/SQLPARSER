@@ -41,7 +41,7 @@ export function handleCreateTable(context: ParseContext, statement: Statement): 
   }
 
   const close = findClosingParen(skeleton, open);
-  const library = close < 0 ? null : readTableBody(text.slice(open + 1, close), context.backslashEscapes);
+  const library = close < 0 ? null : readTableBody(text.slice(open + 1, close), context.dialect);
   if (!library) {
     invalid(`No se ha podido interpretar la definición de la tabla "${name}".`);
     return;

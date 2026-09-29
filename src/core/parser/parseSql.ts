@@ -8,6 +8,7 @@ import { handleAlterTable } from './statements/alterTable';
 import { classifyStatement } from './statements/classifyStatement';
 import { handleCommentOn } from './statements/commentOn';
 import { handleCreateTable } from './statements/createTable';
+import { handleCreateTrigger } from './statements/createTrigger';
 import { handleCreateUniqueIndex } from './statements/createUniqueIndex';
 
 export interface ParseOptions {
@@ -52,7 +53,11 @@ export function parseSql(input: string, options: ParseOptions = {}): ParseResult
 
   const backslashEscapes = dialect.dialect === 'mysql';
   const context = createParseContext(input, dialect.dialect, backslashEscapes);
-  const scan = scanSql(input, { backslashEscapes });
+  const scan = scanSql(input, {
+    backslashEscapes,
+    hashComments: dialect.dialect !== 'oracle',
+    oracle: dialect.dialect === 'oracle',
+  });
 
   if (scan.error) {
     const { code, message } = SCAN_ERRORS[scan.error.kind];
@@ -109,14 +114,17 @@ function processStatements(context: ParseContext, statements: readonly Statement
   const deferred: Statement[] = [];
 
   for (const statement of statements) {
-    if (classifyStatement(statement.skeleton) === 'create-table') handleCreateTable(context, statement);
+    if (classifyStatement(statement) === 'create-table') handleCreateTable(context, statement);
     else deferred.push(statement);
   }
 
   for (const statement of deferred) {
-    switch (classifyStatement(statement.skeleton)) {
+    switch (classifyStatement(statement)) {
       case 'alter-table':
         handleAlterTable(context, statement);
+        break;
+      case 'create-trigger':
+        handleCreateTrigger(context, statement);
         break;
       case 'create-unique-index':
         handleCreateUniqueIndex(context, statement);

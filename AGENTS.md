@@ -145,9 +145,45 @@ Punto de entrada: `parseSql(script, { dialect? }) → { schema, dialect, diagnos
 - **Uso de la librería.** [`sqlSchemaLibrary.ts`](src/core/parser/sqlSchemaLibrary.ts) es el único fichero que importa `@khanakia/sql-schema-core`, y solo se usa para leer definiciones de columna (nombre, tipo, nulabilidad, default, comentarios `--`). Todo lo demás lo analiza el propio parser porque la librería pierde información: separa las FK compuestas, fusiona las UNIQUE compuestas, ignora casi todos los `ALTER TABLE`, recorta tipos (`int unsigned`, `timestamp with time zone`, `schema.tipo`) y no da posiciones ni fragmentos. Hay tests que cubren cada uno de estos casos; no los elimines si cambias de librería.
 - **Esqueleto.** El escáner (`sqlScanner.ts`) produce, además de las sentencias, un esqueleto del texto con comentarios y contenido de literales en blanco y las mismas posiciones. Las palabras clave se buscan en el esqueleto y los valores (defaults, comentarios) se leen del texto original en el mismo offset.
 - **Orden.** Primero se procesan todos los `CREATE TABLE` y después el resto, así un `ALTER TABLE` encuentra su tabla aunque aparezca antes. Las referencias (FK, columnas de restricciones) se resuelven al final, sin distinguir mayúsculas.
-- **Qué se interpreta.** `CREATE TABLE`, `ALTER TABLE` (ADD columna/PK/UNIQUE/FK, `MODIFY`, `ALTER COLUMN … SET DEFAULT/NOT NULL/ADD GENERATED`), `CREATE UNIQUE INDEX` (como UNIQUE) y `COMMENT ON TABLE/COLUMN`. Las sentencias que no afectan al modelo (datos, transacciones, `SET`, `DROP`, índices no únicos, secuencias…) se omiten **sin aviso**. Las que podrían definir estructura y no se interpretan (vistas, tipos, funciones, triggers…) generan un **aviso**.
+- **Qué se interpreta.** `CREATE TABLE`, `ALTER TABLE` (ADD columna/PK/UNIQUE/FK, también en lista `ADD (…)`; `MODIFY`; `ALTER COLUMN … SET DEFAULT/NOT NULL/ADD GENERATED`), `CREATE UNIQUE INDEX` (como UNIQUE), `COMMENT ON TABLE/COLUMN` y los triggers `BEFORE INSERT` que asignan `secuencia.NEXTVAL` (autoincremento de Oracle anterior a 12c). Las sentencias que no afectan al modelo (datos, transacciones, `SET`, `DROP`, índices no únicos, secuencias, sinónimos, bloques anónimos…) se omiten **sin aviso**. Las que podrían definir estructura y no se interpretan (vistas, tipos, funciones, paquetes, otros triggers, `EXECUTE IMMEDIATE 'CREATE TABLE …'`) generan un **aviso**.
 - **Errores vs. avisos.** Son errores: literal, comentario o paréntesis sin cerrar, un `CREATE TABLE` ilegible y un script sin tablas. Todo lo demás (columna ilegible, tipo desconocido, FK a una tabla inexistente…) es un aviso: el elemento se descarta y el análisis continúa. Los códigos están en [`diagnosticCodes.ts`](src/core/parser/diagnosticCodes.ts).
-- **Dialecto.** Se detecta sumando rasgos de sintaxis propios de cada dialecto; si no hay ninguno o hay empate, el resultado es `null` y se avisa. El dialecto influye en los escapes de literales (MySQL) y en algunos tipos (`FLOAT`/`REAL`, `INTEGER PRIMARY KEY` en SQLite).
+- **Dialecto.** Se detecta sumando rasgos de sintaxis propios de cada dialecto; si no hay ninguno o hay empate, el resultado es `null` y se avisa. Ver la sección siguiente.
+
+### Dialectos soportados
+
+`SQL_DIALECTS` en [`core/model/dialect.ts`](src/core/model/dialect.ts) es la lista oficial: **MySQL, PostgreSQL, SQLite y Oracle**. Cualquier cambio en el parser, la inferencia o los generadores debe tenerlos en cuenta todos y llevar tests para cada uno al que afecte.
+
+| Dialecto   | Particularidades que ya maneja el parser                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| MySQL      | Escapes `\'`, comentarios `#` y `/*!… */`, backticks, `AUTO_INCREMENT`, `UNSIGNED` (sube el tipo: `INT UNSIGNED` → `bigint`), `TINYINT(1)` → `boolean`, `COMMENT '…'`, `MODIFY`/`CHANGE` redefinen la columna entera.                                                                                                                                                                                                                                             |
+| PostgreSQL | Dollar quoting `$$`, `COPY … FROM stdin`, metacomandos `\`, `SERIAL`, `nextval(…)`, `GENERATED … AS IDENTITY`, `ALTER TABLE ONLY`, tipos cualificados (`public.tipo`), `FLOAT` = 8 bytes, `REAL` = 4 bytes.                                                                                                                                                                                                                                                       |
+| SQLite     | `AUTOINCREMENT`, `INTEGER PRIMARY KEY` como alias de `rowid` (autoincremento), `WITHOUT ROWID`, `PRAGMA`.                                                                                                                                                                                                                                                                                                                                                            |
+| Oracle     | `/` en su línea como terminador (SQL*Plus); bloques PL/SQL con `;` internos; comandos de SQL*Plus sin `;` (`SET`, `REM`, `PROMPT`, `@`…); literales `q'[…]'`; `#` como carácter de identificador (no comentario); `NUMBER(p,s)`; `DATE` con hora (→ `datetime`); `VARCHAR2(n BYTE/CHAR)`; `DEFAULT ON NULL`; `seq.NEXTVAL` y trigger + secuencia como autoincremento; `ADD (…)`/`MODIFY (…)` en lista; `MODIFY` **parcial** (solo cambia lo indicado). |
+
+Mapeo de `NUMBER` de Oracle (sigue la convención de Hibernate para que un esquema generado por Hibernate vuelva a los mismos tipos): `NUMBER(1)` → `boolean`; hasta 5 dígitos → `smallint`; hasta 10 → `integer`; hasta 19 → `bigint`; más de 19, con decimales o sin precisión → `decimal`. `NUMBER(*,0)` (así define Oracle `INTEGER`) → `integer`.
+
+**Al añadir o modificar un dialecto**, revisa por este orden:
+
+1. `SQL_DIALECTS` (el selector de la UI se deriva de ahí).
+2. Rasgos de detección en [`dialectDetection.ts`](src/core/parser/dialectDetection.ts). Si un rasgo lo comparten dos dialectos, dale peso bajo (p. ej. `WITH TIME ZONE` y `COMMENT ON` son de PostgreSQL y de Oracle) y añade un test de desempate.
+3. Opciones del escáner en `parseSql.ts` (`backslashEscapes`, `hashComments`, `oracle`): terminadores, comentarios y literales.
+4. Preparación del texto para la librería en [`sqlSchemaLibrary.ts`](src/core/parser/sqlSchemaLibrary.ts) (sustituciones que la librería no entiende).
+5. Tipos en [`columnType.ts`](src/core/parser/columnType.ts): tipos propios y tipos cuyo significado cambia según el dialecto (`DATE`, `FLOAT`, `REAL`…).
+6. Sentencias propias que se omiten o se avisan en [`classifyStatement.ts`](src/core/parser/statements/classifyStatement.ts).
+7. Fixtures y tests: los seis casos de US-01 en ese dialecto + un volcado real de su herramienta de exportación habitual.
+
+**Oracle en las siguientes tareas:**
+
+- **Inferencia:** no necesita nada específico; trabaja sobre el modelo, que ya es independiente del dialecto.
+- **Generadores:**
+  - Los nombres de Oracle suelen venir en MAYÚSCULAS (`EMPLOYEES`, `DEPARTMENT_ID`): la estrategia de nombres debe producir `Employee` / `departmentId`, no `EMPLOYEES` / `dEPARTMENTID`.
+  - Los identificadores pueden contener `#` y `$`, que no son válidos en Java y hay que sanear.
+  - Si los nombres de tabla o columna venían entre comillas y no son MAYÚSCULAS, hay que escaparlos en `@Table`/`@Column`.
+- **Autoincremento:** el modelo solo indica `autoIncrement`. Para Oracle lo idiomático en JPA es `GenerationType.SEQUENCE` con el nombre de la secuencia. Si el generador lo necesita, amplía el modelo (p. ej. `Column.sequenceName`) y rellénalo en el parser: la información ya está en `DEFAULT seq.NEXTVAL` y en los triggers.
+- **Limitaciones actuales de Oracle:**
+  - Los tipos `INTERVAL` y los tipos de objeto (`CREATE TYPE … AS OBJECT`) quedan como `unknown`, con aviso.
+  - Las tablas creadas con `EXECUTE IMMEDIATE` no se interpretan; se avisa.
+  - Las columnas virtuales (`GENERATED ALWAYS AS (expr) VIRTUAL`) se tratan como columnas normales.
 
 ### Inferencia de relaciones
 
@@ -192,7 +228,7 @@ Para añadir un ORM nuevo: crear `core/generators/<orm>/`, implementar la interf
 
 ## Configuración de la generación
 
-Opciones del MVP: framework ORM (JPA), paquete base, librería de anotaciones (Jakarta), Lombok sí/no, estrategia de nombres de clase (singular/plural, capitalización) y dialecto SQL manual.
+Opciones del MVP: framework ORM (JPA), paquete base, librería de anotaciones (Jakarta), Lombok sí/no, estrategia de nombres de clase (singular/plural, capitalización) y dialecto SQL manual (MySQL, PostgreSQL, SQLite u Oracle).
 
 - Los valores por defecto viven en un único sitio por generador (`defaultOptions`). El usuario debe poder generar **sin tocar nada** y obtener un resultado útil.
 - Cambiar cualquier opción **regenera automáticamente** la previsualización (con debounce para no bloquear la UI).
@@ -233,6 +269,7 @@ Prohibido, sin excepciones en el MVP:
 - El entorno por defecto de Vitest es **Node** (así se garantiza que `core/` no depende del DOM). Los tests de UI activan jsdom con el docblock `// @vitest-environment jsdom` en la primera línea. Los matchers de `@testing-library/jest-dom` se cargan globalmente desde `vitest.setup.ts`.
 - Para los generadores, comparar la salida contra ficheros esperados (snapshot o golden files) a partir de scripts SQL reales.
 - Cubrir siempre los casos de la tabla de relaciones y las ramas de error de la spec: script inválido (error), sentencias no soportadas (aviso), dialecto no detectado.
+- Cada dialecto soportado tiene sus fixtures en `core/parser/__fixtures__/` (los de Oracle empiezan por `oracle-`). Un cambio que dependa del dialecto se prueba en todos a los que afecte; los tests específicos de Oracle están en `parseSql.oracle.test.ts`.
 - Los componentes de `components/` se testean por comportamiento, no por implementación.
 
 ## Flujo de trabajo para agentes

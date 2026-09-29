@@ -1,8 +1,9 @@
 /**
- * Dialectos SQL soportados en el MVP (los que cubre `@khanakia/sql-schema-core`).
- * El array es la fuente de verdad: el tipo y el selector de la UI se derivan de él.
+ * Dialectos SQL soportados en el MVP. El array es la fuente de verdad: el tipo
+ * y el selector de la UI se derivan de él. Añadir un dialecto obliga a revisar
+ * la detección, el escáner y el mapeo de tipos (ver AGENTS.md → Dialectos).
  */
-export const SQL_DIALECTS = ['mysql', 'postgresql', 'sqlite'] as const;
+export const SQL_DIALECTS = ['mysql', 'postgresql', 'sqlite', 'oracle'] as const;
 
 export type SqlDialect = (typeof SQL_DIALECTS)[number];
 

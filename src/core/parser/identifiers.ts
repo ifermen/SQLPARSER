@@ -1,8 +1,12 @@
 import { splitTopLevel } from './sqlScanner';
 
-/** Identificador SQL: entre comillas dobles, backticks, corchetes o sin comillas. */
+/**
+ * Identificador SQL: entre comillas dobles, backticks, corchetes o sin comillas.
+ * `#` se admite tras el primer carácter (Oracle: `ORDER#`); en MySQL no llega
+ * aquí porque el escáner ya lo ha tratado como comentario.
+ */
 export const IDENTIFIER =
-  '(?:"(?:[^"]|"")+"|`(?:[^`]|``)+`|\\[[^\\]]+\\]|[A-Za-z_\\u00C0-\\uFFFF][\\w$\\u00C0-\\uFFFF]*)';
+  '(?:"(?:[^"]|"")+"|`(?:[^`]|``)+`|\\[[^\\]]+\\]|[A-Za-z_\\u00C0-\\uFFFF][\\w$#\\u00C0-\\uFFFF]*)';
 
 /** Identificador opcionalmente cualificado: `schema.tabla`, `tabla.columna`… */
 export const QUALIFIED_IDENTIFIER = `${IDENTIFIER}(?:\\s*\\.\\s*${IDENTIFIER})*`;

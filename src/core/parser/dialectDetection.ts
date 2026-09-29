@@ -27,13 +27,16 @@ const MARKERS: readonly DialectMarker[] = [
 
   { dialect: 'postgresql', pattern: /\b(?:SMALL|BIG)?SERIAL\b/i, weight: 3 },
   { dialect: 'postgresql', pattern: /::\s*[A-Za-z]/, weight: 3 },
-  { dialect: 'postgresql', pattern: /\bTIMESTAMPTZ\b|\bWITH(?:OUT)?\s+TIME\s+ZONE\b/i, weight: 3 },
+  { dialect: 'postgresql', pattern: /\bTIMESTAMPTZ\b|\bWITHOUT\s+TIME\s+ZONE\b/i, weight: 3 },
+  // Oracle también tiene `WITH TIME ZONE`: peso bajo para no desempatar solo con esto.
+  { dialect: 'postgresql', pattern: /\bWITH\s+TIME\s+ZONE\b/i, weight: 1 },
   { dialect: 'postgresql', pattern: /\b(?:BYTEA|JSONB|CITEXT|INET|CIDR)\b/i, weight: 3 },
   { dialect: 'postgresql', pattern: /\bCHARACTER\s+VARYING\b|\bDOUBLE\s+PRECISION\b/i, weight: 2 },
   { dialect: 'postgresql', pattern: /\bnextval\s*\(/i, weight: 3 },
   { dialect: 'postgresql', pattern: /\bALTER\s+TABLE\s+ONLY\b|\bOWNER\s+TO\b/i, weight: 3 },
   { dialect: 'postgresql', pattern: /\bCREATE\s+(?:EXTENSION|TYPE\s+\S+\s+AS\s+ENUM)\b/i, weight: 3 },
-  { dialect: 'postgresql', pattern: /\bCOMMENT\s+ON\s+(?:TABLE|COLUMN)\b/i, weight: 2 },
+  // Oracle usa la misma sintaxis `COMMENT ON`.
+  { dialect: 'postgresql', pattern: /\bCOMMENT\s+ON\s+(?:TABLE|COLUMN)\b/i, weight: 1 },
   {
     dialect: 'postgresql',
     pattern: /\bGENERATED\s+(?:ALWAYS|BY\s+DEFAULT)\s+AS\s+IDENTITY\b/i,
@@ -46,6 +49,18 @@ const MARKERS: readonly DialectMarker[] = [
   { dialect: 'sqlite', pattern: /\bWITHOUT\s+ROWID\b/i, weight: 3 },
   { dialect: 'sqlite', pattern: /\bPRAGMA\b/i, weight: 3 },
   { dialect: 'sqlite', pattern: /\)\s*STRICT\b/i, weight: 2 },
+
+  { dialect: 'oracle', pattern: /\bN?VARCHAR2\b/i, weight: 3 },
+  { dialect: 'oracle', pattern: /\bNUMBER\s*\(/i, weight: 3 },
+  { dialect: 'oracle', pattern: /\b(?:BINARY_FLOAT|BINARY_DOUBLE|XMLTYPE|NCLOB|UROWID)\b|\bLONG\s+RAW\b/i, weight: 3 },
+  { dialect: 'oracle', pattern: /\bSYS(?:DATE|TIMESTAMP|_GUID)\b/i, weight: 3 },
+  { dialect: 'oracle', pattern: /\.\s*"?NEXTVAL\b/i, weight: 3 },
+  { dialect: 'oracle', pattern: /:NEW\s*\./i, weight: 3 },
+  { dialect: 'oracle', pattern: /\bNOT\s+NULL\s+ENABLE\b|\bON\s+NULL\s+AS\s+IDENTITY\b/i, weight: 3 },
+  { dialect: 'oracle', pattern: /\bWITH\s+LOCAL\s+TIME\s+ZONE\b/i, weight: 3 },
+  { dialect: 'oracle', pattern: /\bSEGMENT\s+CREATION\b|\bPCTFREE\b|\bFROM\s+DUAL\b/i, weight: 3 },
+  // Terminador de SQL*Plus: una barra sola en su línea.
+  { dialect: 'oracle', pattern: /^[ \t]*\/[ \t]*$/m, weight: 2 },
 ];
 
 /**

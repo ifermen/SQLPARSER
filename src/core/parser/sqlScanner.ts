@@ -33,6 +33,14 @@ export interface ScanResult {
 export interface ScanOptions {
   /** `\'` escapa la comilla dentro de un literal (MySQL). */
   readonly backslashEscapes: boolean;
+  /** `#` inicia un comentario de línea (MySQL). En Oracle es parte de los identificadores. */
+  readonly hashComments: boolean;
+  /**
+   * Sintaxis de Oracle / SQL*Plus: `/` en su propia línea termina la sentencia,
+   * los bloques PL/SQL no terminan en `;`, los comandos de SQL*Plus se omiten
+   * y los literales `q'[…]'` son cadenas.
+   */
+  readonly oracle: boolean;
 }
 
 /** Tramo `[start, end)` dentro de un texto. */
@@ -44,6 +52,14 @@ export interface Segment {
 const DOLLAR_QUOTE = /\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/y;
 const COPY_FROM_STDIN = /^COPY\b[\s\S]*\bFROM\s+STDIN\b/i;
 const COPY_DATA_END = /^\\\.[ \t]*\r?$/m;
+/** Bloques PL/SQL: sus `;` internos no terminan la sentencia; la termina una `/`. */
+const PLSQL_BLOCK =
+  /^(?:CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:NON)?EDITIONABLE\s+)?(?:TRIGGER|PROCEDURE|FUNCTION|PACKAGE|TYPE|LIBRARY)\b|DECLARE\b|BEGIN\b)/i;
+const SQLPLUS_TERMINATOR = /^\/\s*$/;
+/** Comandos de SQL*Plus: ocupan una línea y no llevan `;`. */
+const SQLPLUS_COMMAND =
+  /^(?:@@?|(?:REM(?:ARK)?|PRO(?:MPT)?|SET|SPO(?:OL)?|WHENEVER|SHO(?:W)?|EXIT|QUIT|CONN(?:ECT)?|DEF(?:INE)?|UNDEF(?:INE)?|COL(?:UMN)?|TTITLE|BTITLE|EXEC(?:UTE)?)\b)/i;
+const Q_QUOTE_CLOSERS: Readonly<Record<string, string>> = { '[': ']', '{': '}', '(': ')', '<': '>' };
 
 export function scanSql(input: string, options: ScanOptions): ScanResult {
   const length = input.length;
@@ -95,7 +111,7 @@ export function scanSql(input: string, options: ScanOptions): ScanResult {
     }
 
     // Comentarios de línea y metacomandos de psql (`\connect`, `\.`…).
-    if ((c === '-' && next === '-') || c === '#' || (c === '\\' && atLineStart)) {
+    if ((c === '-' && next === '-') || (c === '#' && options.hashComments) || (c === '\\' && atLineStart)) {
       const stop = lineEnd(i);
       blank(i, stop);
       i = stop;
@@ -109,6 +125,21 @@ export function scanSql(input: string, options: ScanOptions): ScanResult {
       continue;
     }
 
+    if (options.oracle && atLineStart) {
+      const line = input.slice(i, lineEnd(i));
+      if (SQLPLUS_TERMINATOR.test(line)) {
+        pushStatement();
+        blank(i, i + line.length);
+        i += line.length;
+        continue;
+      }
+      if (start < 0 && SQLPLUS_COMMAND.test(line)) {
+        blank(i, i + line.length);
+        i += line.length;
+        continue;
+      }
+    }
+
     atLineStart = false;
     if (start < 0) {
       if (c === ';') {
@@ -116,6 +147,17 @@ export function scanSql(input: string, options: ScanOptions): ScanResult {
         continue;
       }
       start = i;
+    }
+
+    if (options.oracle && isOracleQQuote(input, i)) {
+      // q'[…]' (o nq'[…]'): el literal termina en el delimitador de cierre seguido de comilla.
+      const delimiter = input.charAt(i + 2);
+      const close = input.indexOf(`${Q_QUOTE_CLOSERS[delimiter] ?? delimiter}'`, i + 3);
+      if (close < 0) return fail('unterminated-string', i);
+      blank(i + 3, close);
+      i = close + 2;
+      end = i;
+      continue;
     }
 
     if (c === "'" || c === '"' || c === '`') {
@@ -145,6 +187,11 @@ export function scanSql(input: string, options: ScanOptions): ScanResult {
     } else if (c === ')') {
       if (openParens.pop() === undefined) return fail('unbalanced-parentheses', i);
     } else if (c === ';' && openParens.length === 0) {
+      if (options.oracle && PLSQL_BLOCK.test(skeleton.slice(start, Math.min(i, start + 200)).join(''))) {
+        i++;
+        end = i;
+        continue;
+      }
       pushStatement();
       i++;
       const last = statements[statements.length - 1];
@@ -196,7 +243,16 @@ function findQuoteEnd(input: string, open: number, quote: string, backslashEscap
 }
 
 function isIdentifierChar(c: string): boolean {
-  return /[A-Za-z0-9_$]/.test(c);
+  return /[A-Za-z0-9_$#]/.test(c);
+}
+
+/** `q'<delim>…<delim>'` o `nq'…'` de Oracle, que no forme parte de un identificador. */
+function isOracleQQuote(input: string, index: number): boolean {
+  const c = input.charAt(index);
+  if ((c !== 'q' && c !== 'Q') || input.charAt(index + 1) !== "'" || input.length < index + 3) return false;
+  const previous = input.charAt(index - 1);
+  if (previous === 'n' || previous === 'N') return !isIdentifierChar(input.charAt(index - 2));
+  return !isIdentifierChar(previous);
 }
 
 /** Salta un identificador o literal entrecomillado en un esqueleto. */
