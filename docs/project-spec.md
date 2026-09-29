@@ -149,7 +149,7 @@ SQLPARSER es una aplicación web cliente-only. Toda la lógica de análisis, tra
 - **Navegadores soportados:** últimas dos versiones de Chrome, Firefox, Safari y Edge.
 - **Sin soporte para Internet Explorer** ni navegadores sin soporte de ES2020.
 - **Sistemas operativos:** cualquiera con un navegador moderno. No hay dependencia de sistema operativo.
-- **Dialectos SQL soportados en el MVP:** los que soporte la librería de @khanakia/sql-schema-core.
+- **Dialectos SQL soportados en el MVP:** MySQL, PostgreSQL, SQLite y Oracle. El análisis se apoya en @khanakia/sql-schema-core y lo completa donde la librería no llega (por ejemplo, la sintaxis de Oracle y SQL*Plus). Cualquier funcionalidad nueva debe funcionar con los cuatro.
 
 ## Historias de Usuario MVP
 

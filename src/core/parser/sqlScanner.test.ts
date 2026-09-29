@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { findClosingParen, scanSql, splitTopLevel } from './sqlScanner';
 
-const scan = (sql: string, backslashEscapes = false) => scanSql(sql, { backslashEscapes });
+const scan = (sql: string, backslashEscapes = false) =>
+  scanSql(sql, { backslashEscapes, hashComments: true, oracle: false });
+const scanOracle = (sql: string) => scanSql(sql, { backslashEscapes: false, hashComments: false, oracle: true });
 
 describe('scanSql', () => {
   it('separa sentencias por `;` e ignora los `;` dentro de literales, comentarios y paréntesis', () => {
@@ -52,6 +54,61 @@ describe('scanSql', () => {
     ['SELECT 1)', 'unbalanced-parentheses', 8],
   ])('detecta errores léxicos: %s', (sql, kind, start) => {
     expect(scan(sql).error).toMatchObject({ kind, start });
+  });
+});
+
+describe('scanSql · sintaxis de Oracle / SQL*Plus', () => {
+  it('una / sola en su línea termina la sentencia', () => {
+    const { statements } = scanOracle('CREATE TABLE a (id NUMBER)\n/\nCREATE TABLE b (id NUMBER)\n  /  \n');
+
+    expect(statements.map((statement) => statement.text)).toEqual([
+      'CREATE TABLE a (id NUMBER)',
+      'CREATE TABLE b (id NUMBER)',
+    ]);
+  });
+
+  it('los bloques PL/SQL no terminan en sus ; internos', () => {
+    const sql = [
+      'CREATE OR REPLACE TRIGGER t_bi BEFORE INSERT ON t FOR EACH ROW',
+      'BEGIN',
+      '  :NEW.id := t_seq.NEXTVAL;',
+      'END;',
+      '/',
+      'DECLARE x NUMBER; BEGIN x := 1; END;',
+      '/',
+      'SELECT 1 FROM dual;',
+    ].join('\n');
+
+    expect(scanOracle(sql).statements.map((statement) => statement.text.split('\n')[0])).toEqual([
+      'CREATE OR REPLACE TRIGGER t_bi BEFORE INSERT ON t FOR EACH ROW',
+      'DECLARE x NUMBER; BEGIN x := 1; END;',
+      'SELECT 1 FROM dual',
+    ]);
+  });
+
+  it('omite los comandos de SQL*Plus que no llevan ;', () => {
+    const sql = 'SET DEFINE OFF\nREM comentario\nPROMPT Creando tablas\n@otro_script.sql\nCREATE TABLE a (id NUMBER);\nEXIT';
+
+    expect(scanOracle(sql).statements.map((statement) => statement.text)).toEqual(['CREATE TABLE a (id NUMBER)']);
+  });
+
+  it("los literales q'[…]' pueden contener comillas y ; sin cortar la sentencia", () => {
+    const [statement, next] = scanOracle("COMMENT ON TABLE a IS q'[it's; ok]';\nSELECT 1 FROM dual;").statements;
+
+    expect(statement?.text).toBe("COMMENT ON TABLE a IS q'[it's; ok]'");
+    expect(statement?.skeleton).toBe(`COMMENT ON TABLE a IS q'[${' '.repeat("it's; ok".length)}]'`);
+    expect(next?.text).toBe('SELECT 1 FROM dual');
+  });
+
+  it('# forma parte de los identificadores, no es un comentario', () => {
+    const [statement] = scanOracle('CREATE TABLE a (order# NUMBER);').statements;
+
+    expect(statement?.skeleton).toBe('CREATE TABLE a (order# NUMBER)');
+    expect(scan('CREATE TABLE a (id INT) # comentario').statements[0]?.text).toBe('CREATE TABLE a (id INT)');
+  });
+
+  it('fuera de Oracle, la / no termina sentencias', () => {
+    expect(scan('SELECT 1\n/\nSELECT 2;').statements).toHaveLength(1);
   });
 });
 
