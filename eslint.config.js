@@ -206,6 +206,19 @@ export default defineConfig([
     },
   },
 
+  // Los tests de integración de core/ encadenan etapas del pipeline (p. ej. parser + inferencia):
+  // pueden importar cualquier módulo de core/, pero siguen sin poder usar React ni la UI.
+  // El código de producción mantiene las reglas de dependencia de arriba.
+  {
+    files: ['src/core/**/*.integration.test.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        { patterns: [REACT, layer('components'), layer('features'), layer('hooks'), layer('context')] },
+      ],
+    },
+  },
+
   // Los tests pueden usar APIs de navegador (jsdom) sin restricciones de privacidad.
   {
     files: ['src/**/*.test.{ts,tsx}'],
