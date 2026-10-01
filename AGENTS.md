@@ -175,11 +175,11 @@ Mapeo de `NUMBER` de Oracle (sigue la convención de Hibernate para que un esque
 **Oracle en las siguientes tareas:**
 
 - **Inferencia:** no necesita nada específico; trabaja sobre el modelo, que ya es independiente del dialecto.
-- **Generadores:**
-  - Los nombres de Oracle suelen venir en MAYÚSCULAS (`EMPLOYEES`, `DEPARTMENT_ID`): la estrategia de nombres debe producir `Employee` / `departmentId`, no `EMPLOYEES` / `dEPARTMENTID`.
-  - Los identificadores pueden contener `#` y `$`, que no son válidos en Java y hay que sanear.
-  - Si los nombres de tabla o columna venían entre comillas y no son MAYÚSCULAS, hay que escaparlos en `@Table`/`@Column`.
-- **Autoincremento:** el modelo solo indica `autoIncrement`. Para Oracle lo idiomático en JPA es `GenerationType.SEQUENCE` con el nombre de la secuencia. Si el generador lo necesita, amplía el modelo (p. ej. `Column.sequenceName`) y rellénalo en el parser: la información ya está en `DEFAULT seq.NEXTVAL` y en los triggers.
+- **Generador JPA (resuelto):**
+  - los nombres en MAYÚSCULAS dan `Employee` / `departmentId`;
+  - `#` y `$` se eliminan de los nombres Java (`BADGE#` → `badge`) y se conservan en `@Column`.
+- **Nombres entre comillas (pendiente):** el modelo no guarda si un nombre venía entre comillas, así que solo se citan en `@Table`/`@Column` los que no son identificadores simples (espacios, símbolos). Un `"MixedCase"` de PostgreSQL no se cita.
+- **Autoincremento (pendiente):** el modelo solo indica `autoIncrement` y el generador usa `IDENTITY`. Para Oracle lo idiomático en JPA es `GenerationType.SEQUENCE` con el nombre de la secuencia: amplía el modelo (p. ej. `Column.sequenceName`) y rellénalo en el parser, porque la información ya está en `DEFAULT seq.NEXTVAL` y en los triggers.
 - **Limitaciones actuales de Oracle:**
   - Los tipos `INTERVAL` y los tipos de objeto (`CREATE TYPE … AS OBJECT`) quedan como `unknown`, con aviso.
   - Las tablas creadas con `EXECUTE IMMEDIATE` no se interpretan; se avisa.
@@ -224,14 +224,64 @@ interface Generator<TOptions extends object> {
   id: string; // p. ej. "jpa"
   label: string; // nombre visible en la UI
   defaultOptions: TOptions; // valores por defecto sensatos (serializables)
-  generate(schema: EnrichedSchemaModel, options: TOptions): GenerationResult;
+  generate(schema: EnrichedSchemaModel, options: TOptions, context?: GenerationContext): GenerationResult;
+}
+
+interface GenerationContext {
+  diagnostics: Diagnostic[]; // del parser y la inferencia, para el registro del README
+  dialect?: DialectResolution; // detectado o manual, para el README
 }
 
 interface GenerationResult {
   files: { path: string; content: string; language: string }[]; // incluye README
-  diagnostics: Diagnostic[];
+  diagnostics: Diagnostic[]; // solo los del generador
 }
 ```
+
+Los generadores se registran en [`core/generators/registry.ts`](src/core/generators/registry.ts). Las piezas comunes del README (tablas Markdown, registro de avisos y errores, etiquetas de dialecto y de tipo de tabla) están en [`core/generators/readme.ts`](src/core/generators/readme.ts); cada generador añade sus secciones propias.
+
+### Orquestación del pipeline
+
+[`features/converter/convertSql.ts`](src/features/converter/convertSql.ts) encadena `parseSql` → `inferRelationships` → `generatorRegistry.jpa.generate` y devuelve `{ dialect, schema, files, diagnostics }` con los diagnósticos de las tres etapas en orden. Si el parser devuelve errores no se genera nada (`files: []`). Es TypeScript puro sin React: lo usará la UI directamente o dentro de un Web Worker. Es el único punto que conoce todas las etapas; las etapas no se importan entre sí.
+
+### Generador JPA (`core/generators/jpa/`)
+
+Dos fases: [`planEntities.ts`](src/core/generators/jpa/planEntities.ts) convierte el esquema en una descripción de clases (nombres, campos, anotaciones, imports) y [`renderJava.ts`](src/core/generators/jpa/renderJava.ts) la convierte en texto. Los nombres y las colisiones se prueban sobre la planificación; el texto, con golden files.
+
+- **Salida:** una clase `@Entity` por tabla (salvo las tablas intermedias puras), una clase `XxxId` por clave compuesta y `README.md`, en `src/main/java/<paquete>/`. Paquete por defecto `com.example.entity`; un paquete no válido se sustituye por el de por defecto, con aviso.
+- **Nombres** ([`javaNames.ts`](src/core/generators/jpa/javaNames.ts), con las conversiones genéricas de [`utils/naming.ts`](src/utils/naming.ts) y [`utils/inflection.ts`](src/utils/inflection.ts)):
+  - clases en PascalCase y campos en camelCase a partir de snake_case o MAYÚSCULAS;
+  - singular y plural **solo** quitando o poniendo una `s` final: es una decisión del proyecto, no hay reglas ortográficas;
+  - una tabla que se llama como una palabra reservada de Java (`class`) se detecta **antes** del singular y da `ClassEntity`;
+  - una clase que coincide con un tipo usado en el código (`Table`, `List`…) lleva el sufijo `Entity`, y un campo reservado, un `_` final;
+  - dos tablas que darían la misma clase se numeran, con aviso.
+- **Atributos de relación:**
+  - se llaman como la tabla relacionada, en singular para un objeto y en plural para una colección;
+  - solo si dos atributos coincidirían se añade la columna de la FK sin `_id` (`userCreatedBy` / `documentsCreatedBy`) y, como último recurso, un número;
+  - dos relaciones con la misma tabla en sentidos distintos (`department` y `departments`) no coinciden y no se discriminan.
+- **Mapeo:**
+  - clases envoltorio; `@Table`/`@Column` siempre con el nombre físico, entre comillas si no es un identificador simple;
+  - claves compuestas con `@IdClass`;
+  - `@ManyToOne`/`@OneToOne` con `LAZY` y sin `cascade`;
+  - lados inversos siempre (`List` para `@OneToMany`, `Set` para `@ManyToMany`);
+  - ENUM válido → `enum` anidado con `@Enumerated(STRING)`; si no, `String` con aviso;
+  - `@Lob` solo para CLOB/BLOB y los TEXT/BLOB grandes de MySQL;
+  - los `DEFAULT` no se trasladan;
+  - una tabla sin PK se genera sin `@Id`, con aviso.
+- **Propiedad de columnas:** cada columna la escribe una sola asignación. Las columnas de la PK son campos `@Id`. Una relación que reutiliza una columna ya asignada (de la PK o de otra FK) se mapea en solo lectura (`insertable = false, updatable = false`). Así funcionan `@IdClass` con relaciones, la PK compartida y las FK solapadas sin el error «Repeated column in mapping».
+- **Autoincremento:** siempre `GenerationType.IDENTITY`. Las secuencias (`seq.NEXTVAL`, `nextval()`, triggers de Oracle) también, de momento; pasar a `GenerationType.SEQUENCE` está **pendiente** y exige añadir el nombre de la secuencia al modelo.
+- **Lombok:** todavía no implementado. La opción `useLombok` existe pero solo produce un aviso; se generan getters y setters, y `equals`/`hashCode` en las clases `XxxId`.
+- **README** ([`jpaReadme.ts`](src/core/generators/jpa/jpaReadme.ts)), con estas secciones:
+  - configuración usada;
+  - tablas detectadas (tipo, clase, columnas, PK);
+  - relaciones inferidas (propietario, inverso, regla);
+  - ficheros generados;
+  - cómo integrarlo;
+  - decisiones de mapeo;
+  - registro de **todos** los avisos y errores del proceso (análisis, inferencia y generación), con etapa, código, mensaje, fragmento y posición.
+
+  Sin fechas: la salida es determinista.
+- **Diagnósticos (avisos):** códigos en [`diagnosticCodes.ts`](src/core/generators/jpa/diagnosticCodes.ts). El generador no tiene el script, así que sus fragmentos se reconstruyen desde el modelo (`CREATE TABLE t (…)`, `columna TIPO`, `FOREIGN KEY …`).
 
 ### Modelo de esquema (`core/model/`)
 
@@ -245,7 +295,7 @@ Para añadir un ORM nuevo: crear `core/generators/<orm>/`, implementar la interf
 
 ## Configuración de la generación
 
-Opciones del MVP: framework ORM (JPA), paquete base, librería de anotaciones (Jakarta), Lombok sí/no, estrategia de nombres de clase (singular/plural, capitalización) y dialecto SQL manual (MySQL, PostgreSQL, SQLite u Oracle).
+Opciones del MVP: framework ORM (JPA), paquete base, librería de anotaciones (Jakarta), Lombok sí/no (**todavía no implementado**: solo avisa), estrategia de nombres de clase (singular/plural, capitalización) y dialecto SQL manual (MySQL, PostgreSQL, SQLite u Oracle). Los valores por defecto de JPA están en `JPA_DEFAULT_OPTIONS` ([`jpaOptions.ts`](src/core/generators/jpa/jpaOptions.ts)).
 
 - Los valores por defecto viven en un único sitio por generador (`defaultOptions`). El usuario debe poder generar **sin tocar nada** y obtener un resultado útil.
 - Cambiar cualquier opción **regenera automáticamente** la previsualización (con debounce para no bloquear la UI).
@@ -285,6 +335,18 @@ Prohibido, sin excepciones en el MVP:
 - Tests junto al código (`algo.test.ts`). Fixtures SQL en `__fixtures__/` dentro del módulo que las usa.
 - El entorno por defecto de Vitest es **Node** (así se garantiza que `core/` no depende del DOM). Los tests de UI activan jsdom con el docblock `// @vitest-environment jsdom` en la primera línea. Los matchers de `@testing-library/jest-dom` se cargan globalmente desde `vitest.setup.ts`.
 - Para los generadores, comparar la salida contra ficheros esperados (snapshot o golden files) a partir de scripts SQL reales.
+- **Golden files del generador JPA:**
+  - viven en `core/generators/jpa/__golden__/<fixture>/` y hay uno por fichero generado (Java y README) de cada fixture de `core/parser/__fixtures__/`; un fixture nuevo se cubre solo;
+  - si un cambio altera la salida a propósito, se regeneran con `npx vitest run -u src/core/generators/jpa` y la diferencia **se revisa en el PR como código**;
+  - con un JDK disponible, conviene compilar el Java de los golden files (`javac -Xlint:all -Werror`) contra la API de Jakarta Persistence o contra stubs de sus anotaciones.
+- **Tests end-to-end** (`algo.e2e.test.ts`, en `features/`): recorren el pipeline completo (`convertSql`: script → ficheros) sin mocks, incluido el requisito de rendimiento (100 tablas en menos de 2 s). Cuando exista la UI, se añadirán escenarios desde el navegador.
+- **Errores bloqueantes** ([`convertSql.blocking-errors.e2e.test.ts`](src/features/converter/convertSql.blocking-errors.e2e.test.ts)):
+  - cubren cada código de error del parser y sus variantes por dialecto;
+  - comprueban que un error bloquea aunque el resto del script sea válido, que no se genera ningún fichero ni README y que la inferencia y la generación no se ejecutan;
+  - comprueban también que cada error trae fragmento y posición, que los avisos se siguen informando y que, al corregir el script, se genera con la misma configuración;
+  - y la otra cara: con cualquier fixture válido la generación nunca se bloquea.
+
+  Un error nuevo en el parser debe añadir aquí su caso.
 - Cubrir siempre los casos de la tabla de relaciones y las ramas de error de la spec: script inválido (error), sentencias no soportadas (aviso), dialecto no detectado.
 - **Tests de integración** que encadenan etapas del pipeline (p. ej. parser + inferencia): se nombran `algo.integration.test.ts`. Es la única excepción a las reglas de dependencia: ESLint permite que esos ficheros importen cualquier módulo de `core/` (nunca React ni la UI). Reutilizan los fixtures SQL de `core/parser/__fixtures__/` en vez de duplicarlos.
 - Cada dialecto soportado tiene sus fixtures en `core/parser/__fixtures__/` (los de Oracle empiezan por `oracle-`). Un cambio que dependa del dialecto se prueba en todos a los que afecte; los tests específicos de Oracle están en `parseSql.oracle.test.ts`.
