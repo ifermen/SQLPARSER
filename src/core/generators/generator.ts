@@ -1,4 +1,4 @@
-import type { Diagnostic, EnrichedSchemaModel } from '@/core/model';
+import type { Diagnostic, DialectResolution, EnrichedSchemaModel } from '@/core/model';
 
 export interface GeneratedFile {
   /** Ruta relativa dentro del ZIP, con `/` como separador. */
@@ -23,6 +23,19 @@ export interface ClassNamingOptions {
 }
 
 /**
+ * Información de las etapas anteriores del pipeline que el generador no puede
+ * deducir del esquema. Se usa para el README (registro de avisos, dialecto).
+ */
+export interface GenerationContext {
+  /** Diagnósticos del parser y de la inferencia, en orden. */
+  readonly diagnostics: readonly Diagnostic[];
+  /** Cómo se determinó el dialecto (detectado o indicado por el usuario). */
+  readonly dialect?: DialectResolution;
+}
+
+export const EMPTY_GENERATION_CONTEXT: GenerationContext = { diagnostics: [] };
+
+/**
  * Contrato de todo generador de ORM. Las opciones deben ser datos
  * serializables para poder ejecutar el pipeline en un Web Worker.
  */
@@ -33,5 +46,9 @@ export interface Generator<TOptions extends object> {
   readonly label: string;
   /** Valores por defecto: generar sin tocar nada debe dar un resultado útil. */
   readonly defaultOptions: TOptions;
-  generate(schema: EnrichedSchemaModel, options: TOptions): GenerationResult;
+  /**
+   * Genera los ficheros (README incluido). `GenerationResult.diagnostics`
+   * contiene solo los del generador; los de `context` aparecen en el README.
+   */
+  generate(schema: EnrichedSchemaModel, options: TOptions, context?: GenerationContext): GenerationResult;
 }
